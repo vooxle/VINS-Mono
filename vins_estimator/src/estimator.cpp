@@ -137,6 +137,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     all_image_frame.insert(make_pair(header.stamp.toSec(), imageframe));
     tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
 
+    /* ESTIMATE_EXTRINSIC=2代表没有校准，需要进行校准，为1代表经过粗略校准需要进行非线性优化，0代表完全校准 */
     if(ESTIMATE_EXTRINSIC == 2)
     {
         ROS_INFO("calibrating extrinsic param, rotation movement is needed");
@@ -144,12 +145,15 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         {
             vector<pair<Vector3d, Vector3d>> corres = f_manager.getCorresponding(frame_count - 1, frame_count);
             Matrix3d calib_ric;
+            /* 标定从camera到imu之间的外参 */
             if (initial_ex_rotation.CalibrationExRotation(corres, pre_integrations[frame_count]->delta_q, calib_ric))
             {
                 ROS_WARN("initial extrinsic rotation calib success");
                 ROS_WARN_STREAM("initial extrinsic rotation: " << endl << calib_ric);
+                //有几个相机，就有几个ric，目前单目情况下，ric内只有一个值
                 ric[0] = calib_ric;
                 RIC[0] = calib_ric;
+                /* 完成外参标定 */
                 ESTIMATE_EXTRINSIC = 1;
             }
         }
@@ -160,13 +164,18 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         if (frame_count == WINDOW_SIZE)
         {
             bool result = false;
+            /* 有外参且当前帧时间戳大于初始化时间戳0.1秒，就进行初始化操作 */
             if( ESTIMATE_EXTRINSIC != 2 && (header.stamp.toSec() - initial_timestamp) > 0.1)
             {
+               /* 视觉惯性联合初始化 */
                result = initialStructure();
+               /* 更新初始化时间戳 */
                initial_timestamp = header.stamp.toSec();
             }
+            /* 初始化成功 */
             if(result)
             {
+                /* 先进行一次滑动窗口非线性优化，得到当前帧与第一帧的位姿 */
                 solver_flag = NON_LINEAR;
                 solveOdometry();
                 slideWindow();
@@ -218,6 +227,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
 bool Estimator::initialStructure()
 {
     TicToc t_sfm;
+    /* 通过标准差判断imu是否有充分的运动 */
     //check imu observibility
     {
         map<double, ImageFrame>::iterator frame_it;
@@ -246,6 +256,7 @@ bool Estimator::initialStructure()
             //return false;
         }
     }
+    /* 将f_manager中的feature保存到sfm_f */
     // global sfm
     Quaterniond Q[frame_count + 1];
     Vector3d T[frame_count + 1];
@@ -268,12 +279,14 @@ bool Estimator::initialStructure()
     Matrix3d relative_R;
     Vector3d relative_T;
     int l;
+    /* 得到两个特征图之间的变换关系relative_R为旋转矩阵，relative_T为平移向量 */
     if (!relativePose(relative_R, relative_T, l))
     {
         ROS_INFO("Not enough features or parallax; Move device around");
         return false;
     }
     GlobalSFM sfm;
+    /* 对窗口中每个图像帧求解sfm问题，得到所有图像帧相对于参考帧的旋转四元数Q、平移向量T和特征点坐标sfm_tracked_points */
     if(!sfm.construct(frame_count + 1, Q, T, l,
               relative_R, relative_T,
               sfm_f, sfm_tracked_points))
@@ -459,6 +472,7 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
 
             }
             average_parallax = 1.0 * sum_parallax / int(corres.size());
+            /* 保障有足够的视差，且求取Rt矩阵 */
             if(average_parallax * 460 > 30 && m_estimator.solveRelativeRT(corres, relative_R, relative_T))
             {
                 l = i;

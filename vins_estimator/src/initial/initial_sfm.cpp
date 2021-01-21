@@ -18,7 +18,10 @@ void GlobalSFM::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen::Matr
 	point_3d(2) = triangulated_point(2) / triangulated_point(3);
 }
 
-
+/* @brief PNP方法得到第l帧到第i帧的位姿
+ * @param[in]  i  第i帧
+ * @param[update]  R_initial、P_initial、sfm_f
+ */
 bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 								vector<SFMFeature> &sfm_f)
 {
@@ -26,6 +29,7 @@ bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 	vector<cv::Point3f> pts_3_vector;
 	for (int j = 0; j < feature_num; j++)
 	{
+        /* 检查状态，该点是否被三角化 */
 		if (sfm_f[j].state != true)
 			continue;
 		Vector2d point2d;
@@ -33,15 +37,18 @@ bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 		{
 			if (sfm_f[j].observation[k].first == i)
 			{
+                // 通过观测得到2D像素点
 				Vector2d img_pts = sfm_f[j].observation[k].second;
 				cv::Point2f pts_2(img_pts(0), img_pts(1));
 				pts_2_vector.push_back(pts_2);
+                // 通过position得到路标3D坐标
 				cv::Point3f pts_3(sfm_f[j].position[0], sfm_f[j].position[1], sfm_f[j].position[2]);
 				pts_3_vector.push_back(pts_3);
 				break;
 			}
 		}
 	}
+    /* 判断像素点数量是否足够 */
 	if (int(pts_2_vector.size()) < 15)
 	{
 		printf("unstable features tracking, please slowly move you device!\n");
@@ -71,6 +78,11 @@ bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 
 }
 
+
+/* @brief 三角化frame0和frame1间所有对应点
+ * @param[in]  frame,Pose 帧索引和位姿数据
+ * @param[out]   sfm_f的state和position 3D坐标
+ */
 void GlobalSFM::triangulateTwoFrames(int frame0, Eigen::Matrix<double, 3, 4> &Pose0, 
 									 int frame1, Eigen::Matrix<double, 3, 4> &Pose1,
 									 vector<SFMFeature> &sfm_f)
@@ -109,11 +121,19 @@ void GlobalSFM::triangulateTwoFrames(int frame0, Eigen::Matrix<double, 3, 4> &Po
 	}
 }
 
-// 	 q w_R_cam t w_R_cam
-//  c_rotation cam_R_w 
-//  c_translation cam_R_w
-// relative_q[i][j]  j_q_i
-// relative_t[i][j]  j_t_ji  (j < i)
+
+/**
+ * @brief   纯视觉sfm，求解窗口中的所有图像帧相对于第l帧的位姿和三角化的特征点坐标
+ * @param[in]   frame_num	窗口总帧数（frame_count + 1）
+ * @param[out]  q 	窗口内图像帧的旋转四元数q（相对于第l帧）Q[frame_count + 1]
+ * @param[out]	T 	窗口内图像帧的平移向量T（相对于第l帧）
+ * @param[in]  	l 	第l帧
+ * @param[in]  	relative_R	当前帧到第l帧的旋转矩阵
+ * @param[in]  	relative_T 	当前帧到第l帧的平移向量
+ * @param[in]  	sfm_f		所有特征点
+ * @param[out]  sfm_tracked_points 所有在sfm中三角化的特征点ID和坐标
+ * @return  bool true:sfm求解成功
+*/
 bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 			  const Matrix3d relative_R, const Vector3d relative_T,
 			  vector<SFMFeature> &sfm_f, map<int, Vector3d> &sfm_tracked_points)
@@ -133,19 +153,25 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	//cout << "init t_l " << T[l].transpose() << endl;
 
 	//rotate to cam frame
+    /* 旋转 */
 	Matrix3d c_Rotation[frame_num];
+    /* 平移 */
 	Vector3d c_Translation[frame_num];
+    /* 旋转四元数 */
 	Quaterniond c_Quat[frame_num];
 	double c_rotation[frame_num][4];
 	double c_translation[frame_num][3];
+    /* 位姿3*4，第l帧到每一帧的变换矩阵，3x3的旋转矩阵，3x1的平移向量 */
 	Eigen::Matrix<double, 3, 4> Pose[frame_num];
 
+    /* 第l帧 */
 	c_Quat[l] = q[l].inverse();
 	c_Rotation[l] = c_Quat[l].toRotationMatrix();
 	c_Translation[l] = -1 * (c_Rotation[l] * T[l]);
 	Pose[l].block<3, 3>(0, 0) = c_Rotation[l];
 	Pose[l].block<3, 1>(0, 3) = c_Translation[l];
 
+    /* 当前帧 */
 	c_Quat[frame_num - 1] = q[frame_num - 1].inverse();
 	c_Rotation[frame_num - 1] = c_Quat[frame_num - 1].toRotationMatrix();
 	c_Translation[frame_num - 1] = -1 * (c_Rotation[frame_num - 1] * T[frame_num - 1]);

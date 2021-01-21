@@ -27,13 +27,16 @@ bool init_pub = 0;
 
 void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 {
+    /* 判断是否是第一帧 */
     if(first_image_flag)
     {
         first_image_flag = false;
+        /* 记录第一个图像帧的时间 */
         first_image_time = img_msg->header.stamp.toSec();
         last_image_time = img_msg->header.stamp.toSec();
         return;
     }
+    /* 通过时间间隔判断相机数据流是否稳定，有问题则restart */
     // detect unstable camera stream
     if (img_msg->header.stamp.toSec() - last_image_time > 1.0 || img_msg->header.stamp.toSec() < last_image_time)
     {
@@ -47,10 +50,12 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         return;
     }
     last_image_time = img_msg->header.stamp.toSec();
+    /* 发布频率控制，保证每秒钟处理的Image小于FREQ，频率控制在10HZ以内,并不是每读入一帧图像，就要发布特征点 */
     // frequency control
     if (round(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time)) <= FREQ)
     {
         PUB_THIS_FRAME = true;
+        /* 时间间隔内的发布频率十分接近设定频率时，更新时间间隔起始时刻，并将数据发布次数置0 */
         // reset the frequency control
         if (abs(1.0 * pub_count / (img_msg->header.stamp.toSec() - first_image_time) - FREQ) < 0.01 * FREQ)
         {
@@ -61,6 +66,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
     else
         PUB_THIS_FRAME = false;
 
+    /* 将ros mesg image消息格式转化为opencv图像格式 */
     cv_bridge::CvImageConstPtr ptr;
     if (img_msg->encoding == "8UC1")
     {
@@ -86,6 +92,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             trackerData[i].readImage(ptr->image.rowRange(ROW * i, ROW * (i + 1)), img_msg->header.stamp.toSec());
         else
         {
+            /* 光太亮或太暗，自适应直方图均衡化处理 */
             if (EQUALIZE)
             {
                 cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE();
@@ -100,6 +107,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
 #endif
     }
 
+    /* 更新全局ID */
     for (unsigned int i = 0;; i++)
     {
         bool completed = false;
@@ -110,6 +118,9 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             break;
     }
 
+    /* 将特征点id，矫正后归一化平面的3D点(x,y,z=1)，像素2D点(u,v)，像素的速度(vx,vy)
+     * 封装成sensor_msgs::PointCloudPtr类型的feature_points实例中,发布到pub_img
+     */
    if (PUB_THIS_FRAME)
    {
         pub_count++;
@@ -123,6 +134,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         feature_points->header = img_msg->header;
         feature_points->header.frame_id = "world";
 
+        /* 哈希表id */
         vector<set<int>> hash_ids(NUM_OF_CAM);
         for (int i = 0; i < NUM_OF_CAM; i++)
         {
@@ -132,10 +144,14 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
             auto &pts_velocity = trackerData[i].pts_velocity;
             for (unsigned int j = 0; j < ids.size(); j++)
             {
+                /*  该特征点被追踪次数大于1 */
                 if (trackerData[i].track_cnt[j] > 1)
                 {
                     int p_id = ids[j];
+                    /* 哈希表id  insert */
                     hash_ids[i].insert(p_id);
+
+                    /* 大规模点云信息 */
                     geometry_msgs::Point32 p;
                     p.x = un_pts[j].x;
                     p.y = un_pts[j].y;
@@ -156,6 +172,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         feature_points->channels.push_back(velocity_x_of_point);
         feature_points->channels.push_back(velocity_y_of_point);
         ROS_DEBUG("publish %f, at %f", feature_points->header.stamp.toSec(), ros::Time::now().toSec());
+        /* 第一帧不发布，因为没有光流速度 */
         // skip the first image; since no optical speed on frist image
         if (!init_pub)
         {
@@ -164,6 +181,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
         else
             pub_img.publish(feature_points);
 
+        /* 将图像封装到cv_bridge::cvtColor类型的ptr实例中发布到pub_match */
         if (SHOW_TRACK)
         {
             ptr = cv_bridge::cvtColor(ptr, sensor_msgs::image_encodings::BGR8);
@@ -175,6 +193,7 @@ void img_callback(const sensor_msgs::ImageConstPtr &img_msg)
                 cv::Mat tmp_img = stereo_img.rowRange(i * ROW, (i + 1) * ROW);
                 cv::cvtColor(show_img, tmp_img, CV_GRAY2RGB);
 
+                /* 显示追踪状态，越红越好，越蓝越不行 */
                 for (unsigned int j = 0; j < trackerData[i].cur_pts.size(); j++)
                 {
                     double len = std::min(1.0, 1.0 * trackerData[i].track_cnt[j] / WINDOW_SIZE);
